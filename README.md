@@ -103,9 +103,9 @@ Pubdata is posted to Ethereum L1 via EIP-4844 blob transactions. Commit transact
 
 Pubdata is stored off-chain (DA committee or external DA layer). Only commitments/hashes are posted to L1.
 
-- L1 costs are **flat regardless of TPS**: batch frequency stays at the configured rate since pubdata doesn't constrain batch size.
-- No blob gas charged on commits.
-- Costs only increase if the 10,000 transactions-per-batch limit is reached (very high TPS).
+- **No blob gas** charged on commit transactions (the main cost saving vs Rollup).
+- Batch frequency **still scales with TPS**: the batch sealing criteria (pubdata limit, tx-per-batch limit) still apply because the VM still generates state diffs regardless of DA mode. Higher TPS still means more batches per day and more L1 operator transactions.
+- The saving is the blob gas per commit, which is modest at current blob prices (~4% of commit cost) but can be significant during blob gas spikes.
 
 ## Requirements
 
