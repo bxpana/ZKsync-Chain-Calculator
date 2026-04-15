@@ -89,7 +89,8 @@ def collect():
     l2o = get_block(cfg.l2_rpc, hex(max(1,l2n-5000)))
     on = int(l2o["number"],16); ot = int(l2o["timestamp"],16)
     d["l2_block_time"] = (l2t-ot)/(l2n-on) if l2n>on else 25.8
-    d["l2_tps"] = 1.0/d["l2_block_time"]
+    # Approximate TPS from block sampling (1 tx per block at low activity)
+    d["l2_tps"] = 1.0/d["l2_block_time"]  # blocks/sec as proxy for TPS at ~1 tx/block
     d["l2_block_height"] = l2n
 
     gen = get_block(cfg.l2_rpc,"0x1")
@@ -104,7 +105,7 @@ def collect():
     bpd2 = 86400/d["l2_block_time"]
     l2_30 = max(1, int(l2n - 30*bpd2))
     wold = get_bal(cfg.l2_rpc, cfg.watchdog_address, hex(l2_30))/1e18
-    d["wd_l2_daily_spend"] = (wold - d["balances"]["Watchdog_L2"])/30
+    d["wd_l2_daily_spend"] = max(0, (wold - d["balances"]["Watchdog_L2"])/30)
 
     print("  Sampling tx gas...")
     d["avg_gas"] = {}; d["avg_blob_gas_price_gwei"] = 0.01; blob_p = []
@@ -225,30 +226,34 @@ function setMode(m){{
   document.getElementById("btn-r").className=m==="rollup"?"active":"";
   document.getElementById("btn-v").className=m==="validium"?"active":"";
   document.getElementById("mi").textContent=m==="rollup"
-    ?"Rollup: pubdata posted to L1 via EIP-4844 blobs. Batch frequency scales with TPS."
-    :"Validium: pubdata stored off-chain. L1 costs stay flat regardless of TPS. No blob gas.";
+    ?"Rollup: pubdata posted to L1 via EIP-4844 blobs. Batch frequency scales with TPS. Commits include blob gas."
+    :"Validium: pubdata stored off-chain. No blob gas on commits. Batch frequency still scales with TPS (pubdata and tx-count limits still apply to batch sealing).";
   upd();
 }}
 
 function fmt(v){{ return v<0.0001?v.toFixed(8):v<1?v.toFixed(6):v.toFixed(4); }}
-function fN(v){{ return v<0.0001?'<span class="ok">funded</span>':'<span class="needed">'+fmt(v)+'</span>'; }}
+function fN(v){{ return v<=0?'<span class="ok">funded</span>':'<span class="needed">'+fmt(v)+'</span>'; }}
 
 function cBPD(t){{
   const bt=D.l2_block_time, bpd=86400/bt, cb=D.blocks_per_batch;
   const pp=parseInt(document.getElementById("pi").value)||300;
-  if(mode==="validium"){{
-    const tb=t*bt*cb; let e=cb;
-    if(tb>10000) e=Math.max(1,Math.floor(10000/(t*bt)));
-    return {{bpd:bpd/e,bl:0,e:e,pub:0}};
-  }}
-  const tpb=t*bt, ppb=tpb*pp; let e=cb;
-  if(ppb>0&&ppb*cb>BPL) e=Math.max(1,Math.floor(BPL/ppb));
-  const pb=e*ppb, bl=Math.max(1,Math.ceil(pb/BB));
-  return {{bpd:bpd/e,bl:bl,e:e,pub:pb}};
+  const tpb=t*bt, ppb=tpb*pp;
+  let e=cb;
+  // Pubdata limit constrains batch size (applies to BOTH rollup and validium)
+  if(ppb>0&&ppb*e>BPL) e=Math.max(1,Math.floor(BPL/ppb));
+  // Tx-per-batch limit (10,000) constrains batch size
+  if(tpb>0&&tpb*e>10000) e=Math.min(e,Math.max(1,Math.floor(10000/tpb)));
+  const pb=e*ppb;
+  const capped=ppb>BPL;
+  if(mode==="validium") return {{bpd:bpd/e,bl:0,e:e,pub:pb,capped:capped}};
+  const bl=Math.max(1,Math.ceil(pb/BB));
+  return {{bpd:bpd/e,bl:bl,e:e,pub:pb,capped:capped}};
 }}
 
 function cC(gw){{
-  const i=cBPD(tps), b=i.bpd, bl=i.bl, bg=D.avg_blob_gas_price_gwei;
+  const i=cBPD(tps), b=i.bpd, bl=i.bl;
+  // Scale blob gas proportionally with exec gas (correlated during congestion)
+  const bg=D.l1_gas_gwei>0 ? D.avg_blob_gas_price_gwei*(gw/D.l1_gas_gwei) : D.avg_blob_gas_price_gwei;
   const ce=b*D.avg_gas.Commit*gw*1e-9;
   const cb=mode==="rollup"?b*bl*BG*bg*1e-9:0;
   return {{Commit:ce+cb, Prove:b*D.avg_gas.Prove*gw*1e-9,
@@ -284,7 +289,8 @@ function upd(){{
     td.toLocaleString(undefined,{{maximumFractionDigits:0}})+' txs/day): '+
     '<b>'+i.bpd.toFixed(1)+'</b> batches/day, '+i.e+' blocks/batch';
   if(mode==="rollup") ih+=', '+i.bl+' blob(s)/batch, ~'+(i.pub/1024).toFixed(1)+' KB pubdata/batch';
-  else ih+=', no L1 pubdata (off-chain DA)';
+  else ih+=', no blob gas (off-chain DA)';
+  if(i.capped) ih+=' <b style="color:#dc3545">[single block exceeds batch limit, model capped]</b>';
   document.getElementById("si").innerHTML=ih;
   let hh=''; hh+=mT("30d mean",D.gas_30d.mean); hh+=mT("30d median",D.gas_30d.median); hh+=mT("30d P90",D.gas_30d.p90);
   document.getElementById("ht").innerHTML=hh;

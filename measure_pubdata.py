@@ -37,10 +37,11 @@ PUBDATA_PER_SLOT = 60  # bytes, rough average
 
 # Typical storage slots touched per tx type:
 TX_TYPE_SLOTS = {
-    "simple_transfer": 3,    # sender balance, recipient balance, nonce
-    "erc20_transfer":  4,    # sender token bal, recipient token bal, nonce, maybe allowance
-    "contract_call":   6,    # varies widely, 4-20+ slots
-    "system":          1,    # system txs, minimal state change
+    "simple_transfer":  3,    # sender balance, recipient balance, nonce
+    "erc20_transfer":   4,    # sender token bal, recipient token bal, nonce, maybe allowance
+    "contract_call":    6,    # varies widely, 4-20+ slots
+    "contract_deploy": 40,    # bytecode hash, constructor state, storage slots
+    "system":           1,    # system txs, minimal state change
 }
 
 _id = 0
@@ -69,13 +70,18 @@ def classify_tx(tx):
     to = tx.get("to")
     value = int(tx.get("value", "0x0"), 16)
 
+    # System tx detection first (type >= 0x70) to avoid misclassifying by selector
+    tx_type = int(tx.get("type", "0x0"), 16)
+    if tx_type >= 0x70:
+        return "system"
+
     if inp == "0x" and to and value > 0:
         return "simple_transfer"
     if not to:
         return "contract_deploy"
     input_len = (len(inp) - 2) // 2 if len(inp) > 2 else 0
     if input_len <= 4:
-        return "simple_transfer"  # just a function selector or empty
+        return "simple_transfer"
 
     # Check for common ERC-20 selectors
     selector = inp[:10].lower() if len(inp) >= 10 else ""
@@ -86,11 +92,6 @@ def classify_tx(tx):
     }
     if selector in erc20_selectors:
         return "erc20_transfer"
-
-    # System tx detection (type 255 or similar)
-    tx_type = int(tx.get("type", "0x0"), 16)
-    if tx_type >= 0x70:  # ZKsync system tx types
-        return "system"
 
     return "contract_call"
 
